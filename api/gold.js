@@ -1,5 +1,8 @@
 const axios = require('axios');
 
+// CollectAPI Key
+const COLLECTAPI_KEY = 'apikey 1s6VTMY0sbOjCjmHa21lD1:5oh2c7HZO7zxER6bUYLPor';
+
 module.exports = async (req, res) => {
   console.log('=================================');
   console.log('🔥 YENİ İSTEK ALINDI');
@@ -10,168 +13,124 @@ module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   
   if (req.method === 'OPTIONS') {
-    console.log('OPTIONS isteği, 200 döndürülüyor');
     return res.status(200).end();
   }
 
   try {
-    console.log('📡 Döviz.com API çağrısı başlatılıyor...');
-    console.log('URL: https://www.doviz.com/api/v1/golds');
+    console.log('📡 CollectAPI çağrılıyor...');
+    console.log('URL: https://api.collectapi.com/economy/goldPrice');
     
     const response = await axios({
       method: 'GET',
-      url: 'https://www.doviz.com/api/v1/golds',
+      url: 'https://api.collectapi.com/economy/goldPrice',
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json',
-        'Accept-Language': 'tr-TR,tr;q=0.9',
-        'Referer': 'https://www.doviz.com/',
+        'authorization': COLLECTAPI_KEY,
+        'content-type': 'application/json',
       },
       timeout: 10000,
     });
 
     console.log('✅ Response alındı!');
-    console.log('Status Code:', response.status);
-    console.log('Status Text:', response.statusText);
-    console.log('Headers:', JSON.stringify(response.headers));
-    console.log('Data Keys:', Object.keys(response.data));
-    console.log('Raw Data (ilk 500 karakter):', JSON.stringify(response.data).substring(0, 500));
+    console.log('Status:', response.status);
+    console.log('Data:', JSON.stringify(response.data));
 
-    // Status kontrolü
     if (response.status !== 200) {
-      console.error('❌ Status 200 değil:', response.status);
-      return res.status(500).json({
-        success: false,
-        error: `API status hatası: ${response.status}`,
-        details: response.statusText,
-      });
+      throw new Error(`Status ${response.status}`);
     }
 
     const data = response.data;
 
-    // Data kontrolü
-    if (!data || typeof data !== 'object') {
-      console.error('❌ Data geçersiz:', typeof data);
+    if (!data.success) {
+      console.error('❌ API başarısız:', data.message);
       return res.status(500).json({
         success: false,
-        error: 'API geçersiz data döndü',
-        receivedType: typeof data,
+        error: 'API başarısız',
+        message: data.message,
       });
     }
 
-    console.log('📊 Data parse ediliyor...');
+    // CollectAPI format:
+    // {
+    //   "success": true,
+    //   "result": [
+    //     {"name": "Gram Altın", "buying": "5545.20", "selling": "5547.49", ...},
+    //     {"name": "Çeyrek Altın", ...},
+    //     ...
+    //   ]
+    // }
 
-    // Gram altın kontrolü
-    if (!data['gram-altin']) {
-      console.error('❌ gram-altin key yok!');
-      console.error('Mevcut keyler:', Object.keys(data));
+    const result = data.result;
+    console.log('📊 Sonuç sayısı:', result.length);
+
+    // Altınları bul
+    const gramAltin = result.find(item => item.name && item.name.includes('Gram'));
+    const ceyrekAltin = result.find(item => item.name && item.name.includes('Çeyrek'));
+    const yarimAltin = result.find(item => item.name && item.name.includes('Yarım'));
+    const tamAltin = result.find(item => item.name && item.name.includes('Tam'));
+
+    console.log('Gram:', gramAltin);
+    console.log('Çeyrek:', ceyrekAltin);
+
+    if (!gramAltin) {
+      console.error('❌ Gram altın bulunamadı!');
+      console.error('Mevcut itemler:', result.map(r => r.name));
       return res.status(500).json({
         success: false,
-        error: 'gram-altin verisi bulunamadı',
-        availableKeys: Object.keys(data),
+        error: 'Gram altın verisi bulunamadı',
+        availableItems: result.map(r => r.name),
       });
     }
 
-    const gramData = data['gram-altin'];
-    console.log('🔍 Gram altın data:', JSON.stringify(gramData));
+    const gramPrice = parseFloat(gramAltin.selling.replace(',', '.'));
+    const ceyrekPrice = ceyrekAltin ? parseFloat(ceyrekAltin.selling.replace(',', '.')) : gramPrice * 1.6;
+    const yarimPrice = yarimAltin ? parseFloat(yarimAltin.selling.replace(',', '.')) : gramPrice * 3.2;
+    const tamPrice = tamAltin ? parseFloat(tamAltin.selling.replace(',', '.')) : gramPrice * 6.4;
+    const onsPrice = gramPrice * 31.1035;
 
-    // Fiyat parse et
-    const gramSelling = gramData.selling || gramData.satis;
-    const gramBuying = gramData.buying || gramData.alis;
+    console.log('💰 Fiyatlar:');
+    console.log('  Gram:', gramPrice);
+    console.log('  Çeyrek:', ceyrekPrice);
+    console.log('  Yarım:', yarimPrice);
+    console.log('  Tam:', tamPrice);
 
-    console.log('Satış fiyatı:', gramSelling);
-    console.log('Alış fiyatı:', gramBuying);
-
-    if (!gramSelling && !gramBuying) {
-      console.error('❌ Fiyat bulunamadı!');
-      console.error('Gram data:', gramData);
+    if (gramPrice < 100 || gramPrice > 10000) {
+      console.error('❌ Fiyat makul değil:', gramPrice);
       return res.status(500).json({
         success: false,
-        error: 'Fiyat bilgisi bulunamadı',
-        gramData: gramData,
-      });
-    }
-
-    const gramPrice = parseFloat((gramSelling || gramBuying).toString().replace(',', '.'));
-    console.log('💰 Parse edilen gram fiyatı:', gramPrice);
-
-    // Fiyat geçerliliği
-    if (isNaN(gramPrice)) {
-      console.error('❌ Fiyat NaN!');
-      return res.status(500).json({
-        success: false,
-        error: 'Fiyat sayıya çevrilemedi',
-        rawPrice: gramSelling || gramBuying,
-      });
-    }
-
-    if (gramPrice < 100) {
-      console.error('❌ Fiyat çok düşük:', gramPrice);
-      return res.status(500).json({
-        success: false,
-        error: 'Fiyat makul değil (çok düşük)',
+        error: 'Fiyat aralık dışı',
         price: gramPrice,
       });
     }
 
-    if (gramPrice > 10000) {
-      console.error('❌ Fiyat çok yüksek:', gramPrice);
-      return res.status(500).json({
-        success: false,
-        error: 'Fiyat makul değil (çok yüksek)',
-        price: gramPrice,
-      });
-    }
-
-    console.log('✅ Fiyat geçerli!');
-
-    // Diğer altınları parse et
-    const ceyrekPrice = data['ceyrek-altin']?.selling || data['ceyrek-altin']?.satis || (gramPrice * 1.6);
-    const yarimPrice = data['yarim-altin']?.selling || data['yarim-altin']?.satis || (gramPrice * 3.2);
-    const tamPrice = data['tam-altin']?.selling || data['tam-altin']?.satis || (gramPrice * 6.4);
-    const onsPrice = data['ons']?.selling || data['ons']?.satis || (gramPrice * 31.1035);
-
-    const result = {
+    const responseData = {
       success: true,
-      source: 'doviz.com',
+      source: 'collectapi',
       data: {
         gram: parseFloat(gramPrice.toFixed(2)),
-        ceyrek: parseFloat(ceyrekPrice.toString().replace(',', '.')).toFixed(2),
-        yarim: parseFloat(yarimPrice.toString().replace(',', '.')).toFixed(2),
-        tam: parseFloat(tamPrice.toString().replace(',', '.')).toFixed(2),
-        ons: parseFloat(onsPrice.toString().replace(',', '.')).toFixed(2),
+        ceyrek: parseFloat(ceyrekPrice.toFixed(2)),
+        yarim: parseFloat(yarimPrice.toFixed(2)),
+        tam: parseFloat(tamPrice.toFixed(2)),
+        ons: parseFloat(onsPrice.toFixed(2)),
       },
       timestamp: new Date().toISOString(),
     };
 
-    console.log('🎉 BAŞARILI! Sonuç:', JSON.stringify(result));
+    console.log('🎉 BAŞARILI! Sonuç:', JSON.stringify(responseData));
     console.log('=================================\n');
 
-    return res.status(200).json(result);
+    return res.status(200).json(responseData);
 
   } catch (error) {
     console.error('❌❌❌ HATA OLUŞTU! ❌❌❌');
-    console.error('Hata mesajı:', error.message);
-    console.error('Hata tipi:', error.constructor.name);
-    
-    if (error.response) {
-      console.error('Response status:', error.response.status);
-      console.error('Response headers:', JSON.stringify(error.response.headers));
-      console.error('Response data:', JSON.stringify(error.response.data).substring(0, 500));
-    } else if (error.request) {
-      console.error('İstek gönderildi ama cevap yok');
-      console.error('Request:', error.request);
-    } else {
-      console.error('İstek hazırlanırken hata');
-    }
-    
-    console.error('Stack trace:', error.stack);
+    console.error('Hata:', error.message);
+    console.error('Response status:', error.response?.status);
+    console.error('Response data:', JSON.stringify(error.response?.data));
+    console.error('Stack:', error.stack);
     console.error('=================================\n');
 
     return res.status(500).json({
       success: false,
       error: error.message,
-      errorType: error.constructor.name,
       responseStatus: error.response?.status,
       responseData: error.response?.data,
       timestamp: new Date().toISOString(),
