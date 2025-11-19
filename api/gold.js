@@ -18,7 +18,6 @@ module.exports = async (req, res) => {
 
   try {
     console.log('📡 CollectAPI çağrılıyor...');
-    console.log('URL: https://api.collectapi.com/economy/goldPrice');
     
     const response = await axios({
       method: 'GET',
@@ -32,7 +31,6 @@ module.exports = async (req, res) => {
 
     console.log('✅ Response alındı!');
     console.log('Status:', response.status);
-    console.log('Data:', JSON.stringify(response.data));
 
     if (response.status !== 200) {
       throw new Error(`Status ${response.status}`);
@@ -41,58 +39,58 @@ module.exports = async (req, res) => {
     const data = response.data;
 
     if (!data.success) {
-      console.error('❌ API başarısız:', data.message);
+      console.error('❌ API başarısız');
       return res.status(500).json({
         success: false,
         error: 'API başarısız',
-        message: data.message,
       });
     }
-
-    // CollectAPI format:
-    // {
-    //   "success": true,
-    //   "result": [
-    //     {"name": "Gram Altın", "buying": "5545.20", "selling": "5547.49", ...},
-    //     {"name": "Çeyrek Altın", ...},
-    //     ...
-    //   ]
-    // }
 
     const result = data.result;
     console.log('📊 Sonuç sayısı:', result.length);
 
     // Altınları bul
     const gramAltin = result.find(item => item.name && item.name.includes('Gram'));
-    const ceyrekAltin = result.find(item => item.name && item.name.includes('Çeyrek'));
-    const yarimAltin = result.find(item => item.name && item.name.includes('Yarım'));
-    const tamAltin = result.find(item => item.name && item.name.includes('Tam'));
-
-    console.log('Gram:', gramAltin);
-    console.log('Çeyrek:', ceyrekAltin);
+    const ceyrekAltin = result.find(item => item.name && item.name.includes('Çeyrek') && !item.name.includes('Eski'));
+    const yarimAltin = result.find(item => item.name && item.name.includes('Yarım') && !item.name.includes('Eski'));
+    const tamAltin = result.find(item => item.name && item.name.includes('Tam') && !item.name.includes('Eski'));
+    const onsAltin = result.find(item => item.name && item.name === 'ONS Altın');
 
     if (!gramAltin) {
       console.error('❌ Gram altın bulunamadı!');
-      console.error('Mevcut itemler:', result.map(r => r.name));
       return res.status(500).json({
         success: false,
         error: 'Gram altın verisi bulunamadı',
-        availableItems: result.map(r => r.name),
       });
     }
 
-    const gramPrice = parseFloat(gramAltin.selling.replace(',', '.'));
-    const ceyrekPrice = ceyrekAltin ? parseFloat(ceyrekAltin.selling.replace(',', '.')) : gramPrice * 1.6;
-    const yarimPrice = yarimAltin ? parseFloat(yarimAltin.selling.replace(',', '.')) : gramPrice * 3.2;
-    const tamPrice = tamAltin ? parseFloat(tamAltin.selling.replace(',', '.')) : gramPrice * 6.4;
-    const onsPrice = gramPrice * 31.1035;
+    console.log('💰 Gram data:', gramAltin);
 
-    console.log('💰 Fiyatlar:');
+    // Fiyatları parse et (number veya string olabilir)
+    const parsePrice = (value) => {
+      if (typeof value === 'number') {
+        return value;
+      }
+      if (typeof value === 'string') {
+        return parseFloat(value.replace(',', '.'));
+      }
+      return 0;
+    };
+
+    const gramPrice = parsePrice(gramAltin.selling || gramAltin.buying);
+    const ceyrekPrice = ceyrekAltin ? parsePrice(ceyrekAltin.selling) : gramPrice * 1.6;
+    const yarimPrice = yarimAltin ? parsePrice(yarimAltin.selling) : gramPrice * 3.2;
+    const tamPrice = tamAltin ? parsePrice(tamAltin.selling) : gramPrice * 6.4;
+    const onsPrice = onsAltin ? parsePrice(onsAltin.selling) : gramPrice * 31.1035;
+
+    console.log('💰 Parse edilen fiyatlar:');
     console.log('  Gram:', gramPrice);
     console.log('  Çeyrek:', ceyrekPrice);
     console.log('  Yarım:', yarimPrice);
     console.log('  Tam:', tamPrice);
+    console.log('  Ons:', onsPrice);
 
+    // Fiyat kontrolü
     if (gramPrice < 100 || gramPrice > 10000) {
       console.error('❌ Fiyat makul değil:', gramPrice);
       return res.status(500).json({
@@ -115,7 +113,7 @@ module.exports = async (req, res) => {
       timestamp: new Date().toISOString(),
     };
 
-    console.log('🎉 BAŞARILI! Sonuç:', JSON.stringify(responseData));
+    console.log('🎉 BAŞARILI!');
     console.log('=================================\n');
 
     return res.status(200).json(responseData);
@@ -123,16 +121,12 @@ module.exports = async (req, res) => {
   } catch (error) {
     console.error('❌❌❌ HATA OLUŞTU! ❌❌❌');
     console.error('Hata:', error.message);
-    console.error('Response status:', error.response?.status);
-    console.error('Response data:', JSON.stringify(error.response?.data));
     console.error('Stack:', error.stack);
     console.error('=================================\n');
 
     return res.status(500).json({
       success: false,
       error: error.message,
-      responseStatus: error.response?.status,
-      responseData: error.response?.data,
       timestamp: new Date().toISOString(),
     });
   }
