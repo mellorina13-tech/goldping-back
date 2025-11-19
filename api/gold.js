@@ -10,184 +10,40 @@ function isCacheValid() {
   return (Date.now() - cacheTimestamp) < CACHE_DURATION;
 }
 
-// Döviz.com API
-async function fetchFromDovizCom() {
+async function fetchFromInvesting() {
   try {
-    console.log('📡 Döviz.com çağrılıyor...');
+    console.log('📡 Investing.com...');
     
+    // Investing.com API (ücretsiz alternatif)
     const response = await axios.get(
-      'https://www.doviz.com/api/v1/golds',
+      'https://api.investing.com/api/financialdata/8830/historical/chart/?period=P1D&interval=PT1M',
       {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'application/json',
-          'Accept-Language': 'tr-TR,tr;q=0.9',
-          'Referer': 'https://www.doviz.com/',
+          'User-Agent': 'Mozilla/5.0',
+          'domain-id': '1',
         },
         timeout: 10000,
       }
     );
 
-    console.log('✅ Döviz.com:', response.status);
-
-    if (response.status === 200 && response.data) {
-      const data = response.data;
+    if (response.data && response.data.data && response.data.data.length > 0) {
+      const latest = response.data.data[response.data.data.length - 1];
+      const onsTL = parseFloat(latest[1]);
+      const gramTL = onsTL / 31.1035;
       
-      const parsePrice = (key) => {
-        if (!data[key]) return 0;
-        const price = data[key].selling || data[key].buying || 0;
-        return parseFloat(String(price).replace(',', '.'));
-      };
-
-      const prices = {
-        gram: parsePrice('gram-altin'),
-        ceyrek: parsePrice('ceyrek-altin'),
-        yarim: parsePrice('yarim-altin'),
-        tam: parsePrice('tam-altin'),
-        ons: parsePrice('ons'),
-      };
-
-      console.log('💰 Fiyatlar:', prices);
-
-      // Geçerlilik kontrolü
-      if (prices.gram > 5000 && prices.gram < 7000) {
-        return { ...prices, source: 'doviz.com' };
+      if (gramTL > 5000 && gramTL < 7000) {
+        return {
+          gram: gramTL,
+          ceyrek: gramTL * 1.6,
+          yarim: gramTL * 3.2,
+          tam: gramTL * 6.4,
+          ons: onsTL,
+          source: 'investing.com',
+        };
       }
     }
   } catch (error) {
-    console.log('⚠️ Döviz.com hatası:', error.message);
+    console.log('⚠️ Investing hatası:', error.message);
   }
   return null;
 }
-
-// Mynet Finans
-async function fetchFromMynet() {
-  try {
-    console.log('📡 Mynet çağrılıyor...');
-    
-    const response = await axios.get(
-      'https://finans.mynet.com/altin/',
-      {
-        headers: { 'User-Agent': 'Mozilla/5.0' },
-        timeout: 10000,
-      }
-    );
-
-    if (response.status === 200) {
-      const html = response.data;
-      
-      // JSON içinde埋 fiyatlar var
-      const jsonMatch = html.match(/var\s+goldData\s*=\s*(\{[^}]+\})/);
-      
-      if (jsonMatch) {
-        const jsonStr = jsonMatch[1];
-        const data = JSON.parse(jsonStr);
-        
-        const gram = parseFloat(data.gram || 0);
-        
-        if (gram > 5000 && gram < 7000) {
-          return {
-            gram: gram,
-            ceyrek: gram * 1.6,
-            yarim: gram * 3.2,
-            tam: gram * 6.4,
-            ons: gram * 31.1035,
-            source: 'mynet',
-          };
-        }
-      }
-    }
-  } catch (error) {
-    console.log('⚠️ Mynet hatası:', error.message);
-  }
-  return null;
-}
-
-// Fallback: Manuel güncellenen fiyat
-async function getFallbackPrice() {
-  console.log('⚠️ Tüm API\'ler başarısız, fallback');
-  
-  return {
-    gram: 5547.49,
-    ceyrek: 8876.0,
-    yarim: 17752.0,
-    tam: 35504.0,
-    ons: 172552.0,
-    source: 'fallback',
-  };
-}
-
-// Multi-source
-async function fetchGoldPrice() {
-  const sources = [
-    fetchFromDovizCom,
-    fetchFromMynet,
-  ];
-
-  for (const source of sources) {
-    const result = await source();
-    if (result && result.gram > 5000 && result.gram < 7000) {
-      return result;
-    }
-  }
-
-  return await getFallbackPrice();
-}
-
-module.exports = async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Cache-Control', 'public, s-maxage=300');
-  
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-
-  try {
-    console.log('🔥 İstek alındı');
-
-    let priceData;
-
-    if (isCacheValid()) {
-      console.log('✅ Cache');
-      priceData = priceCache;
-    } else {
-      console.log('🔄 API çağrılıyor...');
-      priceData = await fetchGoldPrice();
-      
-      priceCache = priceData;
-      cacheTimestamp = Date.now();
-    }
-
-    return res.status(200).json({
-      success: true,
-      source: priceData.source,
-      data: {
-        gram: parseFloat(priceData.gram.toFixed(2)),
-        ceyrek: parseFloat(priceData.ceyrek.toFixed(2)),
-        yarim: parseFloat(priceData.yarim.toFixed(2)),
-        tam: parseFloat(priceData.tam.toFixed(2)),
-        ons: parseFloat(priceData.ons.toFixed(2)),
-      },
-      timestamp: new Date().toISOString(),
-    });
-
-  } catch (error) {
-    console.error('❌ Hata:', error.message);
-    
-    const fallback = await getFallbackPrice();
-    
-    return res.status(200).json({
-      success: true,
-      source: fallback.source,
-      data: {
-        gram: fallback.gram,
-        ceyrek: fallback.ceyrek,
-        yarim: fallback.yarim,
-        tam: fallback.tam,
-        ons: fallback.ons,
-      },
-      timestamp: new Date().toISOString(),
-    });
-  }
-};
