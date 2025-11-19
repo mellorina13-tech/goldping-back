@@ -1,133 +1,290 @@
 const axios = require('axios');
 
-// USD/TRY Kuru Çek
-async function getUSDTRY() {
-  try {
-    // TCMB USD/TRY kuru
-    const today = new Date();
-    const dateStr = formatDate(today);
-    const startDate = formatDate(new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000)); // 7 gün önce
-    
-    const url = `https://evds2.tcmb.gov.tr/service/evds/series=TP.DK.USD.A.YTL&startDate=${startDate}&endDate=${dateStr}&type=json`;
-    
-    const response = await axios.get(url, { timeout: 10000 });
-    
-    if (response.data && response.data.items && response.data.items.length > 0) {
-      const latest = response.data.items[response.data.items.length - 1];
-      const rate = parseFloat(latest['TP_DK_USD_A_YTL']);
-      console.log(`✅ TCMB USD/TRY: ${rate}`);
-      return rate;
-    }
-  } catch (error) {
-    console.log('⚠️ TCMB kur hatası:', error.message);
-  }
-  
-  // Fallback: Yaklaşık kur
-  return 34.50;
+// Cache
+let priceCache = null;
+let cacheTimestamp = null;
+const CACHE_DURATION = 5 * 60 * 1000; // 5 dakika
+
+function isCacheValid() {
+  if (!priceCache || !cacheTimestamp) return false;
+  return (Date.now() - cacheTimestamp) < CACHE_DURATION;
 }
 
-// Altın Fiyatları Çek (USD)
-async function getGoldPricesUSD() {
+// 1. Döviz.com API (ÖNCELİK 1)
+async function fetchFromDovizCom() {
   try {
-    // Metals-API (Ücretsiz alternatif)
+    console.log('📡 Döviz.com API çağrılıyor...');
+    
     const response = await axios.get(
-      'https://api.metals.live/v1/spot',
-      { timeout: 10000 }
+      'https://www.doviz.com/api/v1/golds',
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'application/json',
+        },
+        timeout: 10000,
+      }
     );
-    
-    if (response.data && response.data[0]) {
-      const goldPrice = response.data[0].price; // Ons fiyatı USD
-      console.log(`✅ Gold spot (USD): $${goldPrice}`);
+
+    console.log('✅ Döviz.com response:', response.status);
+
+    if (response.status === 200 && response.data) {
+      const data = response.data;
       
-      // Gram hesapla (1 ons = 31.1035 gram)
-      const gramPrice = goldPrice / 31.1035;
-      
-      return {
-        gram: gramPrice,
-        ons: goldPrice,
+      console.log('📊 Döviz.com keys:', Object.keys(data));
+
+      const parseGold = (key) => {
+        if (!data[key]) return 0;
+        const selling = data[key].selling || data[key].buying || 0;
+        return parseFloat(String(selling).replace(',', '.'));
       };
+
+      const prices = {
+        gram: parseGold('gram-altin'),
+        ceyrek: parseGold('ceyrek-altin'),
+        yarim: parseGold('yarim-altin'),
+        tam: parseGold('tam-altin'),
+        ons: parseGold('ons'),
+      };
+
+      console.log('💰 Döviz.com fiyatlar:', prices);
+
+      if (prices.gram > 100) {
+        return {
+          ...prices,
+          source: 'doviz.com',
+        };
+      }
     }
   } catch (error) {
-    console.log('⚠️ Metals.live hatası:', error.message);
+    console.log('⚠️ Döviz.com hatası:', error.message);
   }
-  
-  // Fallback: Sabit USD fiyatları
-  return {
-    gram: 59.50, // ~$59.50/gram
-    ons: 1850.00, // ~$1850/ons
-  };
+  return null;
 }
 
-// Tarih formatla (DD-MM-YYYY)
-function formatDate(date) {
-  const day = String(date.getDate()).padStart(2, '0');
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const year = date.getFullYear();
-  return `${day}-${month}-${year}`;
+// 2. Mynet Finans API (ÖNCELİK 2)
+async function fetchFromMynet() {
+  try {
+    console.log('📡 Mynet Finans deneniyor...');
+    
+    const response = await axios.get(
+      'https://finans.mynet.com/borsa/altin-fiyatlari/',
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0',
+        },
+        timeout: 10000,
+      }
+    );
+
+    if (response.status === 200) {
+      const html = response.data;
+      
+      // Gram altın fiyatı bul
+      const gramMatch = html.match(/Gram Altın.*?data-last="([\d,\.]+)"/s);
+      const ceyrekMatch = html.match(/Çeyrek Altın.*?data-last="([\d,\.]+)"/s);
+      const yarimMatch = html.match(/Yarım Altın.*?data-last="([\d,\.]+)"/s);
+      const tamMatch = html.match(/Tam Altın.*?data-last="([\d,\.]+)"/s);
+      
+      if (gramMatch) {
+        const gram = parseFloat(gramMatch[1].replace(',', '.'));
+        
+        console.log('💰 Mynet gram:', gram);
+        
+        if (gram > 100) {
+          return {
+            gram: gram,
+            ceyrek: ceyrekMatch ? parseFloat(ceyrekMatch[1].replace(',', '.')) : gram * 1.6,
+            yarim: yarimMatch ? parseFloat(yarimMatch[1].replace(',', '.')) : gram * 3.2,
+            tam: tamMatch ? parseFloat(tamMatch[1].replace(',', '.')) : gram * 6.4,
+            ons: gram * 31.1035,
+            source: 'mynet',
+          };
+        }
+      }
+    }
+  } catch (error) {
+    console.log('⚠️ Mynet hatası:', error.message);
+  }
+  return null;
+}
+
+// 3. Altın Piyasası (ÖNCELİK 3)
+async function fetchFromAltinPiyasasi() {
+  try {
+    console.log('📡 Altın Piyasası deneniyor...');
+    
+    const response = await axios.get(
+      'https://www.altinpiyasasi.net/',
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0',
+        },
+        timeout: 10000,
+      }
+    );
+
+    if (response.status === 200) {
+      const html = response.data;
+      
+      // Fiyatları HTML'den çek
+      const gramMatch = html.match(/Gram Altın[^>]*>[\s\S]*?₺([\d,\.]+)/i);
+      
+      if (gramMatch) {
+        const gram = parseFloat(gramMatch[1].replace(',', '.'));
+        
+        console.log('💰 Altın Piyasası gram:', gram);
+        
+        if (gram > 100) {
+          return {
+            gram: gram,
+            ceyrek: gram * 1.6,
+            yarim: gram * 3.2,
+            tam: gram * 6.4,
+            ons: gram * 31.1035,
+            source: 'altinpiyasasi',
+          };
+        }
+      }
+    }
+  } catch (error) {
+    console.log('⚠️ Altın Piyasası hatası:', error.message);
+  }
+  return null;
+}
+
+// 4. Bloomberg HT (ÖNCELİK 4)
+async function fetchFromBloomberg() {
+  try {
+    console.log('📡 Bloomberg HT deneniyor...');
+    
+    const response = await axios.get(
+      'https://www.bloomberght.com/altin',
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0',
+        },
+        timeout: 10000,
+      }
+    );
+
+    if (response.status === 200) {
+      const html = response.data;
+      
+      const gramMatch = html.match(/Gram[^>]*>[\s\S]{0,200}?([\d,\.]+)/i);
+      
+      if (gramMatch) {
+        const gram = parseFloat(gramMatch[1].replace(',', '.'));
+        
+        console.log('💰 Bloomberg gram:', gram);
+        
+        if (gram > 100) {
+          return {
+            gram: gram,
+            ceyrek: gram * 1.6,
+            yarim: gram * 3.2,
+            tam: gram * 6.4,
+            ons: gram * 31.1035,
+            source: 'bloomberg',
+          };
+        }
+      }
+    }
+  } catch (error) {
+    console.log('⚠️ Bloomberg hatası:', error.message);
+  }
+  return null;
+}
+
+// Multi-source fetcher (Öncelik sırasıyla)
+async function fetchGoldPrice() {
+  const sources = [
+    fetchFromDovizCom,       // 1. ÖNCELİK (JSON API)
+    fetchFromMynet,          // 2. ÖNCELİK (HTML scrape)
+    fetchFromAltinPiyasasi,  // 3. ÖNCELİK (HTML scrape)
+    fetchFromBloomberg,      // 4. ÖNCELİK (HTML scrape)
+  ];
+
+  for (const source of sources) {
+    const result = await source();
+    if (result && result.gram > 100) {
+      return result;
+    }
+  }
+
+  // Fallback (tüm kaynaklar başarısız)
+  console.log('⚠️ TÜM KAYNAKLAR BAŞARISIZ, FALLBACK!');
+  return {
+    gram: 5547.49,
+    ceyrek: 8876.0,
+    yarim: 17752.0,
+    tam: 35504.0,
+    ons: 172552.0,
+    source: 'fallback',
+  };
 }
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Cache-Control', 'public, s-maxage=300'); // 5 dakika CDN cache
   
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
 
   try {
-    console.log('🔥 Altın fiyatları istendi');
+    console.log('🔥 Altın fiyatı istendi');
 
-    // USD/TRY kurunu al
-    const usdTry = await getUSDTRY();
-    console.log(`💵 USD/TRY: ${usdTry}`);
+    let priceData;
 
-    // Altın fiyatlarını USD olarak al
-    const goldUSD = await getGoldPricesUSD();
-    console.log(`💰 Gold (USD): Gram=$${goldUSD.gram.toFixed(2)}, Ons=$${goldUSD.ons.toFixed(2)}`);
-
-    // TL'ye çevir
-    const gramTL = goldUSD.gram * usdTry;
-    const onsTL = goldUSD.ons * usdTry;
-
-    // Diğer altınları hesapla
-    const ceyrekTL = gramTL * 1.6; // ~1.6 gram
-    const yarimTL = gramTL * 3.2; // ~3.2 gram
-    const tamTL = gramTL * 6.4; // ~6.4 gram
+    // Cache kontrolü
+    if (isCacheValid()) {
+      console.log('✅ Cache\'den döndürülüyor (fresh)');
+      priceData = priceCache;
+    } else {
+      console.log('🔄 Cache yok/eski, kaynaklar deneniyor...');
+      priceData = await fetchGoldPrice();
+      
+      // Cache'e kaydet
+      priceCache = priceData;
+      cacheTimestamp = Date.now();
+      
+      console.log(`💾 Cache güncellendi (kaynak: ${priceData.source})`);
+    }
 
     const result = {
       success: true,
-      source: 'tcmb-metals',
+      source: priceData.source,
+      cached: (cacheTimestamp && (Date.now() - cacheTimestamp) > 1000),
       data: {
-        gram: parseFloat(gramTL.toFixed(2)),
-        ceyrek: parseFloat(ceyrekTL.toFixed(2)),
-        yarim: parseFloat(yarimTL.toFixed(2)),
-        tam: parseFloat(tamTL.toFixed(2)),
-        ons: parseFloat(onsTL.toFixed(2)),
-      },
-      rates: {
-        usdTry: usdTry,
-        goldUSD: goldUSD.gram,
+        gram: parseFloat(priceData.gram.toFixed(2)),
+        ceyrek: parseFloat(priceData.ceyrek.toFixed(2)),
+        yarim: parseFloat(priceData.yarim.toFixed(2)),
+        tam: parseFloat(priceData.tam.toFixed(2)),
+        ons: parseFloat(priceData.ons.toFixed(2)),
       },
       timestamp: new Date().toISOString(),
+      cacheExpiry: cacheTimestamp ? new Date(cacheTimestamp + CACHE_DURATION).toISOString() : null,
     };
 
-    console.log('✅ Sonuç:', JSON.stringify(result.data));
+    console.log(`✅ Başarıyla döndürüldü (${priceData.source})`);
 
-    res.status(200).json(result);
+    return res.status(200).json(result);
 
   } catch (error) {
-    console.error('❌ Genel hata:', error.message);
+    console.error('❌ GENEL HATA:', error.message);
     
-    // Fallback: Sabit fiyatlar
-    res.status(200).json({
+    // Emergency fallback
+    return res.status(200).json({
       success: true,
-      source: 'fallback',
+      source: 'emergency-fallback',
       data: {
         gram: 5547.49,
-        ceyrek: 896.20,
-        yarim: 1792.40,
-        tam: 3584.80,
-        ons: 191234.50,
+        ceyrek: 8876.0,
+        yarim: 17752.0,
+        tam: 35504.0,
+        ons: 172552.0,
       },
       timestamp: new Date().toISOString(),
     });
