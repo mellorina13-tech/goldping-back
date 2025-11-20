@@ -1,148 +1,113 @@
-import 'dart:convert';
-import 'package:http/http.dart' as http;
+const axios = require('axios');
+const cheerio = require('cheerio'); // ← BAŞA EKLENDİ
 
-class GoldAPI {
-  static const String backendUrl = 'https://goldping-back.vercel.app/api/gold.js';
-  static const String historicalUrl = 'https://goldping-back.vercel.app/api/scrape-historical';
+module.exports = async (req, res) => {
+  console.log('🕷️ Döviz.com tarihsel veri (simülasyon)...');
+  
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
 
-  /// Anlık Fiyat (Döviz.com Scraping)
-  static Future<double> fetchGold(String type, {String currency = 'TL'}) async {
-    try {
-      debugPrint('💰 Anlık fiyat çekiliyor (Döviz.com)...');
-      
-      final response = await http.get(Uri.parse(backendUrl))
-          .timeout(const Duration(seconds: 30)); // ← 30 saniye
+  try {
+    // Önce anlık fiyatı al
+    console.log('📡 Anlık fiyat alınıyor...');
+    
+    const currentResponse = await axios.get('https://altin.doviz.com/gram-altin', {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html',
+        'Accept-Language': 'tr-TR,tr;q=0.9',
+      },
+      timeout: 15000,
+    });
 
-      debugPrint('📡 Response: ${response.statusCode}');
+    const $ = cheerio.load(currentResponse.data);
+    
+    // Anlık fiyatı parse et
+    let currentPrice = null;
+    
+    const priceElement = $('.value').first();
+    if (priceElement.length > 0) {
+      const priceText = priceElement.text().trim();
+      currentPrice = parseFloat(priceText.replace(/\./g, '').replace(',', '.'));
+      console.log('✅ Fiyat bulundu (.value):', currentPrice);
+    }
 
-      if (response.statusCode == 200) {
-        final json = jsonDecode(response.body);
-        
-        if (json['success'] == true) {
-          final data = json['data'];
-          
-          double price;
-          switch (type) {
-            case 'gram': 
-              price = (data['gram'] as num).toDouble(); 
-              break;
-            case 'ceyrek': 
-              price = (data['ceyrek'] as num).toDouble(); 
-              break;
-            case 'yarim': 
-              price = (data['yarim'] as num).toDouble(); 
-              break;
-            case 'tam': 
-              price = (data['tam'] as num).toDouble(); 
-              break;
-            case 'ons': 
-              price = (data['ons'] as num).toDouble(); 
-              break;
-            default: 
-              price = (data['gram'] as num).toDouble();
-          }
-          
-          debugPrint('✅ Anlık fiyat: ₺$price (Kaynak: ${json['source']})');
-          return price;
+    // Alternatif selector
+    if (!currentPrice || isNaN(currentPrice)) {
+      $('span').each((i, elem) => {
+        const text = $(elem).text().trim();
+        if (text.match(/^\d{1,2}\.\d{3},\d{2}$/)) {
+          currentPrice = parseFloat(text.replace(/\./g, '').replace(',', '.'));
+          console.log('✅ Fiyat bulundu (span):', currentPrice);
+          return false; // break
         }
+      });
+    }
+
+    if (!currentPrice || currentPrice < 100) {
+      throw new Error('Anlık fiyat alınamadı');
+    }
+
+    console.log('💰 Anlık fiyat:', currentPrice);
+
+    // 30 günlük simülasyon oluştur
+    const prices = [];
+    let price = currentPrice * 0.97; // %3 daha düşük başla
+
+    for (let i = 0; i < 30; i++) {
+      // Gerçekçi günlük değişim
+      let changePercent = (Math.random() * 0.01) - 0.005; // -0.5% ile +0.5%
+      
+      // Haftalık volatilite
+      if (i % 7 === 0) {
+        changePercent *= 1.8;
       }
       
-      throw Exception('HTTP ${response.statusCode}');
+      price = price * (1 + changePercent);
       
-    } catch (e) {
-      debugPrint('❌ Anlık fiyat hatası: $e');
-      rethrow;
+      // Sınırları koru
+      if (price < currentPrice * 0.94) price = currentPrice * 0.945;
+      if (price > currentPrice * 1.06) price = currentPrice * 1.055;
+      
+      const today = new Date();
+      today.setDate(today.getDate() - (30 - i));
+      const dateStr = today.toLocaleDateString('tr-TR');
+      
+      prices.push({
+        date: dateStr,
+        gramPrice: parseFloat(price.toFixed(2)),
+        onsPrice: parseFloat((price * 31.1035).toFixed(2)),
+      });
     }
+
+    // Son gün = gerçek fiyat
+    prices[29].gramPrice = currentPrice;
+    prices[29].onsPrice = parseFloat((currentPrice * 31.1035).toFixed(2));
+
+    console.log(`✅ ${prices.length} tarihsel veri oluşturuldu`);
+
+    return res.status(200).json({
+      success: true,
+      source: 'doviz.com-simulation',
+      count: prices.length,
+      data: prices,
+      timestamp: new Date().toISOString(),
+      note: 'Gerçek anlık fiyattan türetilmiş simülasyon',
+    });
+
+  } catch (error) {
+    console.error('❌ Hata:', error.message);
+    console.error('Stack:', error.stack);
+
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+      stack: error.stack,
+      timestamp: new Date().toISOString(),
+    });
   }
-
-  /// Tarihsel Veriler (Döviz.com Scraping/Simülasyon)
-  static Future<List<double>> fetchHistoricalPrices(String type) async {
-    try {
-      debugPrint('🕷️ Tarihsel veri scraping başlıyor...');
-      
-      final response = await http.get(Uri.parse(historicalUrl))
-          .timeout(const Duration(seconds: 45)); // ← 45 saniye (daha uzun!)
-
-      debugPrint('📡 Scraping response: ${response.statusCode}');
-
-      if (response.statusCode == 200) {
-        final json = jsonDecode(response.body);
-        
-        if (json['success'] == true) {
-          List<double> prices = [];
-          
-          for (var item in json['data']) {
-            double gramPrice = (item['gramPrice'] as num).toDouble();
-            
-            // Altın türüne göre çarpan uygula
-            double adjustedPrice = gramPrice;
-            switch (type) {
-              case 'gram':
-                adjustedPrice = gramPrice;
-                break;
-              case 'ceyrek':
-                adjustedPrice = gramPrice * 1.6;
-                break;
-              case 'yarim':
-                adjustedPrice = gramPrice * 3.2;
-                break;
-              case 'tam':
-                adjustedPrice = gramPrice * 6.4;
-                break;
-              case 'ons':
-                adjustedPrice = gramPrice * 31.1035;
-                break;
-            }
-            
-            prices.add(adjustedPrice);
-          }
-          
-          debugPrint('✅ ${prices.length} tarihsel veri alındı (${json['source']})');
-          return prices;
-        }
-      }
-      
-      debugPrint('⚠️ Scraping başarısız, simülasyona geçiliyor...');
-      throw Exception('Scraping failed');
-      
-    } catch (e) {
-      debugPrint('❌ Tarihsel veri hatası: $e');
-      debugPrint('🔄 Simülasyon verisi kullanılacak...');
-      
-      // Fallback: Simülasyon
-      return _generateSimulatedPrices(type);
-    }
-  }
-
-  /// Simülasyon (Fallback)
-  static Future<List<double>> _generateSimulatedPrices(String type) async {
-    try {
-      final currentPrice = await fetchGold(type);
-      
-      List<double> prices = [];
-      double price = currentPrice * 0.97;
-      
-      for (int i = 0; i < 30; i++) {
-        double change = (price * 0.005) * (i.isEven ? 1.2 : -0.8);
-        if (i % 7 == 0) change *= 1.5;
-        
-        price += change;
-        
-        if (price < currentPrice * 0.94) price = currentPrice * 0.945;
-        if (price > currentPrice * 1.06) price = currentPrice * 1.055;
-        
-        prices.add(double.parse(price.toStringAsFixed(2)));
-      }
-      
-      prices[29] = currentPrice;
-      
-      debugPrint('✅ ${prices.length} simülasyon verisi oluşturuldu');
-      
-      return prices;
-      
-    } catch (e) {
-      debugPrint('❌ Simülasyon hatası: $e');
-      rethrow;
-    }
-  }
-}
+};
