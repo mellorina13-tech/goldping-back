@@ -1,8 +1,11 @@
 const axios = require('axios');
-const cheerio = require('cheerio'); // ← BAŞA EKLENDİ
+const cheerio = require('cheerio');
+
+// Statik tarihsel veri
+const historicalData = require('../data/gold_historical.json');
 
 module.exports = async (req, res) => {
-  console.log('🕷️ Döviz.com tarihsel veri (simülasyon)...');
+  console.log('📊 Tarihsel veri (statik JSON + güncel fiyat)...');
   
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -12,102 +15,104 @@ module.exports = async (req, res) => {
   }
 
   try {
-    // Önce anlık fiyatı al
-    console.log('📡 Anlık fiyat alınıyor...');
+    // 1. Statik JSON'dan tüm veriyi al
+    let allData = [...historicalData];
     
-    const currentResponse = await axios.get('https://altin.doviz.com/gram-altin', {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'text/html',
-        'Accept-Language': 'tr-TR,tr;q=0.9',
-      },
-      timeout: 15000,
-    });
+    console.log(`📊 Statik JSON'dan ${allData.length} veri alındı`);
 
-    const $ = cheerio.load(currentResponse.data);
+    // 2. Bugünün güncel fiyatını Döviz.com'dan çek
+    console.log('📡 Güncel fiyat Döviz.com\'dan çekiliyor...');
     
-    // Anlık fiyatı parse et
-    let currentPrice = null;
-    
-    const priceElement = $('.value').first();
-    if (priceElement.length > 0) {
-      const priceText = priceElement.text().trim();
-      currentPrice = parseFloat(priceText.replace(/\./g, '').replace(',', '.'));
-      console.log('✅ Fiyat bulundu (.value):', currentPrice);
-    }
-
-    // Alternatif selector
-    if (!currentPrice || isNaN(currentPrice)) {
-      $('span').each((i, elem) => {
-        const text = $(elem).text().trim();
-        if (text.match(/^\d{1,2}\.\d{3},\d{2}$/)) {
-          currentPrice = parseFloat(text.replace(/\./g, '').replace(',', '.'));
-          console.log('✅ Fiyat bulundu (span):', currentPrice);
-          return false; // break
-        }
+    try {
+      const response = await axios.get('https://altin.doviz.com/gram-altin', {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'text/html',
+        },
+        timeout: 10000,
       });
-    }
 
-    if (!currentPrice || currentPrice < 100) {
-      throw new Error('Anlık fiyat alınamadı');
-    }
-
-    console.log('💰 Anlık fiyat:', currentPrice);
-
-    // 30 günlük simülasyon oluştur
-    const prices = [];
-    let price = currentPrice * 0.97; // %3 daha düşük başla
-
-    for (let i = 0; i < 30; i++) {
-      // Gerçekçi günlük değişim
-      let changePercent = (Math.random() * 0.01) - 0.005; // -0.5% ile +0.5%
+      const $ = cheerio.load(response.data);
+      let currentPrice = null;
       
-      // Haftalık volatilite
-      if (i % 7 === 0) {
-        changePercent *= 1.8;
+      // Selector 1: .value
+      const priceElement = $('.value').first();
+      if (priceElement.length > 0) {
+        const priceText = priceElement.text().trim();
+        currentPrice = parseFloat(priceText.replace(/\./g, '').replace(',', '.'));
+        console.log('✅ Güncel fiyat bulundu (.value):', currentPrice);
       }
-      
-      price = price * (1 + changePercent);
-      
-      // Sınırları koru
-      if (price < currentPrice * 0.94) price = currentPrice * 0.945;
-      if (price > currentPrice * 1.06) price = currentPrice * 1.055;
-      
-      const today = new Date();
-      today.setDate(today.getDate() - (30 - i));
-      const dateStr = today.toLocaleDateString('tr-TR');
-      
-      prices.push({
-        date: dateStr,
-        gramPrice: parseFloat(price.toFixed(2)),
-        onsPrice: parseFloat((price * 31.1035).toFixed(2)),
-      });
+
+      // Selector 2: span tarama
+      if (!currentPrice || isNaN(currentPrice)) {
+        $('span').each((i, elem) => {
+          const text = $(elem).text().trim();
+          if (text.match(/^\d{1,2}\.\d{3},\d{2}$/)) {
+            currentPrice = parseFloat(text.replace(/\./g, '').replace(',', '.'));
+            console.log('✅ Güncel fiyat bulundu (span):', currentPrice);
+            return false;
+          }
+        });
+      }
+
+      if (currentPrice && currentPrice > 100) {
+        console.log('💰 Güncel fiyat:', currentPrice);
+        
+        // 3. Bugünün tarihini al
+        const today = new Date();
+        const todayStr = today.toLocaleDateString('tr-TR'); // 20.11.2025
+        
+        const todayData = {
+          date: todayStr,
+          gramPrice: parseFloat(currentPrice.toFixed(2)),
+          onsPrice: parseFloat((currentPrice * 31.1035).toFixed(2)),
+        };
+
+        // 4. Bugünün verisi zaten varsa güncelle, yoksa ekle
+        const todayIndex = allData.findIndex(item => item.date === todayStr);
+        
+        if (todayIndex !== -1) {
+          allData[todayIndex] = todayData;
+          console.log('📝 Bugünün verisi güncellendi');
+        } else {
+          allData.push(todayData);
+          console.log('➕ Bugünün verisi eklendi');
+        }
+      } else {
+        console.log('⚠️ Güncel fiyat alınamadı, sadece statik veri kullanılıyor');
+      }
+    } catch (priceError) {
+      console.log('⚠️ Güncel fiyat çekilemedi:', priceError.message);
     }
 
-    // Son gün = gerçek fiyat
-    prices[29].gramPrice = currentPrice;
-    prices[29].onsPrice = parseFloat((currentPrice * 31.1035).toFixed(2));
+    // 5. Son 30 günü döndür
+    const last30Days = allData.slice(-30);
 
-    console.log(`✅ ${prices.length} tarihsel veri oluşturuldu`);
+    console.log(`✅ Toplam ${last30Days.length} veri hazırlandı`);
 
     return res.status(200).json({
       success: true,
-      source: 'doviz.com-simulation',
-      count: prices.length,
-      data: prices,
+      source: 'static-json-with-live-update',
+      count: last30Days.length,
+      data: last30Days,
       timestamp: new Date().toISOString(),
-      note: 'Gerçek anlık fiyattan türetilmiş simülasyon',
+      note: 'Investing.com tarihsel veri + Döviz.com güncel fiyat',
     });
 
   } catch (error) {
     console.error('❌ Hata:', error.message);
     console.error('Stack:', error.stack);
 
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-      stack: error.stack,
+    // Fallback: Sadece statik JSON
+    const last30Days = historicalData.slice(-30);
+
+    return res.status(200).json({
+      success: true,
+      source: 'static-json-only',
+      count: last30Days.length,
+      data: last30Days,
       timestamp: new Date().toISOString(),
+      note: 'Sadece statik tarihsel veri (güncel fiyat eklenemedi)',
     });
   }
 };
