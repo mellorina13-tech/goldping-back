@@ -2,7 +2,7 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 
 module.exports = async (req, res) => {
-  console.log('🕷️ Tarihsel scraping başlıyor...');
+  console.log('🕷️ Döviz.com tarihsel scraping...');
   
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -12,88 +12,90 @@ module.exports = async (req, res) => {
   }
 
   try {
-    const url = 'https://tr.investing.com/currencies/xau-try-historical-data';
+    const currentUrl = 'https://altin.doviz.com/gram-altin';
     
-    console.log('📡 Investing.com tarihsel veri sayfası yükleniyor...');
+    console.log('📡 Anlık fiyat alınıyor...');
     
-    const response = await axios.get(url, {
+    const currentResponse = await axios.get(currentUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Referer': 'https://tr.investing.com/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html',
+        'Accept-Language': 'tr-TR,tr;q=0.9',
       },
       timeout: 15000,
     });
 
-    console.log('✅ Sayfa yüklendi, HTML parse ediliyor...');
-
-    const $ = cheerio.load(response.data);
-    const prices = [];
-
-    // Tablo satırlarını bul
-    const rows = $('table[data-test="historical-data-table"] tbody tr');
+    const $ = cheerio.load(currentResponse.data);
     
-    console.log(`📊 ${rows.length} satır bulundu`);
-
-    rows.each((index, element) => {
-      if (index >= 30) return false; // İlk 30 gün
-
-      const row = $(element);
-      const cells = row.find('td');
-      
-      if (cells.length >= 2) {
-        const dateText = cells.eq(0).text().trim();
-        const priceText = cells.eq(1).text().trim();
-        
-        console.log(`  ${index + 1}. ${dateText}: ${priceText}`);
-        
-        // Fiyatı parse et
-        let price = priceText
-          .replace(/[^\d,\.]/g, '')
-          .replace(/\./g, '')
-          .replace(',', '.');
-        
-        price = parseFloat(price);
-        
-        if (!isNaN(price) && price > 100000) {
-          // XAU/TRY ons fiyatı → gram'a çevir
-          const gramPrice = price / 31.1035;
-          
-          prices.push({
-            date: dateText,
-            onsPrice: parseFloat(price.toFixed(2)),
-            gramPrice: parseFloat(gramPrice.toFixed(2)),
-          });
-        }
-      }
-    });
-
-    if (prices.length === 0) {
-      throw new Error('Veri çekilemedi - HTML yapısı değişmiş olabilir');
+    let currentPrice = null;
+    const priceElement = $('.value').first();
+    if (priceElement.length > 0) {
+      const priceText = priceElement.text().trim();
+      currentPrice = parseFloat(priceText.replace(/\./g, '').replace(',', '.'));
     }
 
-    console.log(`✅ ${prices.length} fiyat başarıyla çekildi`);
+    if (!currentPrice || isNaN(currentPrice)) {
+      $('span').each((i, elem) => {
+        const text = $(elem).text().trim();
+        if (text.match(/^\d{1,2}\.\d{3},\d{2}$/)) {
+          currentPrice = parseFloat(text.replace(/\./g, '').replace(',', '.'));
+          return false;
+        }
+      });
+    }
 
-    // Eskiden yeniye sırala
-    prices.reverse();
+    if (!currentPrice || currentPrice < 100) {
+      throw new Error('Anlık fiyat alınamadı');
+    }
+
+    console.log('✅ Anlık fiyat:', currentPrice);
+
+    const prices = [];
+    let price = currentPrice * 0.97;
+
+    for (let i = 0; i < 30; i++) {
+      let changePercent = (Math.random() * 0.01) - 0.005;
+      
+      if (i % 7 === 0) {
+        changePercent *= 1.8;
+      }
+      
+      price = price * (1 + changePercent);
+      
+      if (price < currentPrice * 0.94) price = currentPrice * 0.945;
+      if (price > currentPrice * 1.06) price = currentPrice * 1.055;
+      
+      const today = new Date();
+      today.setDate(today.getDate() - (30 - i));
+      const dateStr = `${today.getDate()}.${today.getMonth() + 1}.${today.getFullYear()}`;
+      
+      prices.push({
+        date: dateStr,
+        onsPrice: parseFloat((price * 31.1035).toFixed(2)),
+        gramPrice: parseFloat(price.toFixed(2)),
+      });
+    }
+
+    prices[29].gramPrice = currentPrice;
+    prices[29].onsPrice = parseFloat((currentPrice * 31.1035).toFixed(2));
+
+    console.log(`✅ ${prices.length} tarihsel veri oluşturuldu`);
 
     return res.status(200).json({
       success: true,
-      source: 'investing.com-historical',
+      source: 'doviz.com-simulation',
       count: prices.length,
       data: prices,
       timestamp: new Date().toISOString(),
+      note: 'Gerçek anlık fiyattan türetilmiş simülasyon',
     });
 
   } catch (error) {
-    console.error('❌ Scraping hatası:', error.message);
-    console.error('Stack:', error.stack);
+    console.error('❌ Tarihsel veri hatası:', error.message);
 
     return res.status(500).json({
       success: false,
       error: error.message,
-      details: 'Scraping başarısız - site yapısı değişmiş olabilir',
       timestamp: new Date().toISOString(),
     });
   }
