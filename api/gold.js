@@ -4,7 +4,7 @@ const RAPIDAPI_KEY = '628145dca4mshef6a351b880c48bp19969bjsnaad5c257ddcb';
 const RAPIDAPI_HOST = 'harem-altin-live-gold-price-data.p.rapidapi.com';
 
 module.exports = async (req, res) => {
-  console.log('🔥 RapidAPI - Anlık altın fiyatları');
+  console.log('🔥 RapidAPI Harem - Anlık altın fiyatları');
   
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -17,11 +17,11 @@ module.exports = async (req, res) => {
     console.log('📡 RapidAPI çağrılıyor...');
     
     const response = await axios.get(
-      'https://harem-altin-live-gold-price-data.p.rapidapi.com/latest',
+      'https://harem-altin-live-gold-price-data.p.rapidapi.com/harem_altin/prices',
       {
         headers: {
-          'X-RapidAPI-Key': RAPIDAPI_KEY,
-          'X-RapidAPI-Host': RAPIDAPI_HOST,
+          'x-rapidapi-key': RAPIDAPI_KEY,
+          'x-rapidapi-host': RAPIDAPI_HOST,
         },
         timeout: 15000,
       }
@@ -49,6 +49,7 @@ module.exports = async (req, res) => {
     // Fiyatları parse et (5.678,36 → 5678.36)
     const parsePrice = (priceStr) => {
       if (!priceStr) return 0;
+      // Bin ayırıcı noktaları kaldır, ondalık virgülü noktaya çevir
       return parseFloat(priceStr.replace(/\./g, '').replace(',', '.'));
     };
 
@@ -57,6 +58,10 @@ module.exports = async (req, res) => {
     const yarimPrice = yarimData ? parsePrice(yarimData.sell || yarimData.buy) : gramPrice * 3.2;
     const tamPrice = tamData ? parsePrice(tamData.sell || tamData.buy) : gramPrice * 6.4;
     const onsPrice = onsData ? parsePrice(onsData.sell || onsData.buy) : gramPrice * 31.1035;
+
+    if (gramPrice < 100) {
+      throw new Error('Geçersiz fiyat: ' + gramPrice);
+    }
 
     console.log('💰 Fiyatlar:');
     console.log(`  Gram: ₺${gramPrice.toFixed(2)}`);
@@ -76,13 +81,6 @@ module.exports = async (req, res) => {
         ons: parseFloat(onsPrice.toFixed(2)),
       },
       timestamp: new Date().toISOString(),
-      raw: {
-        gram: gramData,
-        ceyrek: ceyrekData,
-        yarim: yarimData,
-        tam: tamData,
-        ons: onsData,
-      },
     });
 
   } catch (error) {
